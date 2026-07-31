@@ -41,10 +41,15 @@ async function submit(){
   error.hidden=true;
   if(!text){error.textContent='Add event details before reviewing dates.';error.hidden=false;return}
   go.disabled=true;go.textContent='Sending…';
-  const f=new FormData();
-  f.append('kind','create');f.append('text',text);f.append('idempotencyKey',idempotency(text));
+  /* JSON, not FormData: lets the Worker refuse multipart on Content-Type alone,
+     before any body is read or parsed. Also means a cross-origin form post cannot
+     forge a submission, since it would require a CORS preflight. */
   try{
-    const r=await fetch('/api/jobs',{method:'POST',body:f});
+    const r=await fetch('/api/jobs',{
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify({kind:'create',text,idempotencyKey:idempotency(text)})
+    });
     const b=await r.json().catch(()=>null);
     if(!r.ok||!b?.ok)throw new Error(b?.message||b?.code||'The request could not be sent.');
     if(!b.submissionId||!b.receipt)throw new Error('The request was received, but its private receipt was missing. Please try again.');

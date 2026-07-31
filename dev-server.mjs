@@ -32,6 +32,13 @@ http
     }
 
     if (req.method === "POST" && url.pathname === "/api/jobs") {
+      const ct = req.headers["content-type"] || "";
+      console.log(`[submit] content-type=${ct}`);
+      if (ct.includes("multipart/form-data")) {
+        console.warn("  !! multipart submission — Worker would have to parse before rejecting");
+        res.writeHead(409, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, code: "IMAGE_UPLOADS_DISABLED" }));
+      }
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({ ok: true, submissionId: "dev-" + Date.now(), receipt: "dev-receipt" }));
     }
