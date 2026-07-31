@@ -66,8 +66,11 @@ async function poll(delay=1200){
   if(!active)return;
   let r;
   try{
-    const headers=etag?{'If-None-Match':etag}:{};
-    r=await fetch('/api/v2/submissions/'+encodeURIComponent(active.id)+'?receipt='+encodeURIComponent(active.receipt),{headers});
+    /* Receipt travels as a header, never in the URL: query strings land in
+       server logs, browser history and referrer headers. */
+    const headers={Authorization:'Receipt '+active.receipt};
+    if(etag)headers['If-None-Match']=etag;
+    r=await fetch('/api/v2/submissions/'+encodeURIComponent(active.id),{headers});
   }catch(e){
     /* Network-level failure only. Genuinely transient, so retry — but not forever. */
     if(++softFails>MAX_SOFT_FAILS){

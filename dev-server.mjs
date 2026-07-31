@@ -37,7 +37,9 @@ http
     }
 
     if (url.pathname.startsWith("/api/v2/submissions/")) {
-      console.log(`[status] ${url.pathname}${url.search}  -> ${MOCK}`);
+      const auth = req.headers.authorization || "";
+      console.log(`[status] ${url.pathname}${url.search} auth=${auth ? "header" : "MISSING"} -> ${MOCK}`);
+      if (url.search.includes("receipt=")) console.warn("  !! receipt found in query string");
       if (MOCK === "404") {
         res.writeHead(404, { "content-type": "application/json" });
         return res.end(JSON.stringify({ ok: false, code: "submission_not_found" }));
