@@ -11,7 +11,25 @@ import { PAGE } from "./src/page.js";
 const MOCK = process.env.MOCK || "404";
 const PORT = Number(process.env.PORT || 8787);
 
+const ready = (title, offsetMin = 1440) => {
+  const from = new Date(Date.now() + offsetMin * 60000);
+  const to = new Date(from.getTime() + 90 * 60000);
+  return {
+    ok: true, can_confirm: true, state: "ready",
+    headline: "Review your calendar draft",
+    message: "Nothing has been changed yet.",
+    draft: { revision: 1, assumptions: [], rows: [
+      { rowId: "a".repeat(32), operation: "create",
+        payload: { action: "create", title, from: from.toISOString(), to: to.toISOString(), timezone: "America/Chicago" } }
+    ] }
+  };
+};
+
 const bodies = {
+  ready: ready("Dinner with Mom"),
+  ready_past: ready("Dinner with Mom", -2880),
+  ready_xss: ready("<img src=x onerror=alert(1)>"),
+  confirmed: { ok: true, state: "processing", message: "Confirmed." },
   processing: { ok: true, state: "processing" },
   needs_attention: {
     ok: true,
@@ -41,6 +59,26 @@ http
       }
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({ ok: true, submissionId: "dev-" + Date.now(), receipt: "dev-receipt" }));
+    }
+
+    if (url.pathname.endsWith("/confirm")) {
+      const body = await new Promise(r => { let d = ""; req.on("data", c => (d += c)); req.on("end", () => r(d)); });
+      console.log(`[confirm] auth=${req.headers.authorization ? "header" : "MISSING"} body=${body}`);
+      const mode = process.env.CONFIRM || "ok";
+      if (mode === "draft_changed") {
+        res.writeHead(409, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, code: "DRAFT_CHANGED", message: "This draft changed. Review the newest version before confirming." }));
+      }
+      if (mode === "unavailable") {
+        res.writeHead(409, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, code: "CONFIRMATION_NOT_AVAILABLE" }));
+      }
+      if (mode === "duplicate") {
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ ok: true, state: "confirmed", duplicate: true }));
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ ok: true, state: "confirmed", message: "Your confirmed request is ready to be applied." }));
     }
 
     if (url.pathname.startsWith("/api/v2/submissions/")) {

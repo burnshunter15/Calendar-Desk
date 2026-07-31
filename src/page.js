@@ -5,6 +5,7 @@ export const PAGE = String.raw`<!doctype html>
 </style></head><body><div class="app"><header><span class="heart">♡</span> Calendar Desk</header>
 <div class="card" id="c1"><span class="lbl">What's happening?</span><textarea id="msg" spellcheck="false" placeholder="Dinner with Mom tomorrow at 6 PM for 90 minutes"></textarea><div class="drop" aria-disabled="true">Photos coming soon</div><p class="hint">Use <b>today</b>, <b>tomorrow</b>, or <b>YYYY-MM-DD</b>. Include AM/PM, and either &quot;from 3 PM to 4 PM&quot; or &quot;at 3 PM for 90 minutes&quot;.</p><button id="go">Review dates</button><p class="hint">We'll check with you before anything goes on the calendar.</p><p id="submit-error" class="error" hidden></p></div>
 <div class="card" id="c2" hidden><div class="wait"><span class="blocks"><i></i><i></i><i></i></span><span id="wait-label">Reading your request…</span></div><p id="wait-detail" class="hint">Safe to leave — it's saved under <b>your requests</b>.</p><button id="restart" class="ghost" hidden>Start a new request</button></div>
+<div class="card" id="c3" hidden><span class="lbl" id="draft-lbl">Review your calendar draft</span><p class="hint" id="draft-note">Nothing has been changed yet.</p><div id="rows"></div><p id="confirm-error" class="error" hidden></p><button id="make" hidden>Create</button></div>
 </div>
 <script>
 (() => {
@@ -12,6 +13,105 @@ const ACTIVE='calendar-desk:active:v1', KEY='calendar-desk:key:v1';
 let etag='', timer=0, softFails=0;
 const MAX_SOFT_FAILS=4;
 const $=id=>document.getElementById(id), c1=$('c1'), c2=$('c2'), msg=$('msg'), go=$('go'), error=$('submit-error');
+
+const c3=$('c3');
+let draftRevision=null;
+
+/* Times arrive as UTC ISO plus a timezone. Format in that timezone and always show
+   the year, so an assumed year is visible rather than inferred silently. */
+function fmtRow(row){
+  const p=row.payload||{}, tz=p.timezone||'UTC';
+  if(p.from&&p.to){
+    const from=new Date(p.from), to=new Date(p.to);
+    return {
+      when:new Intl.DateTimeFormat('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric',timeZone:tz}).format(from),
+      detail:new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',timeZone:tz}).format(from)
+        +' – '+new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',timeZone:tz,timeZoneName:'short'}).format(to),
+      title:p.title||'(untitled)',
+      past:from.getTime()<Date.now()
+    };
+  }
+  if(p.action==='move'){
+    const pad=n=>String(n).padStart(2,'0'), o=p.oldStart||{}, n=p.newStart||{};
+    return {when:p.date||'',detail:pad(o.hour)+':'+pad(o.minute)+' to '+pad(n.hour)+':'+pad(n.minute),title:p.title||'(untitled)',past:false};
+  }
+  return {when:'',detail:'',title:p.title||'(untitled)',past:false};
+}
+
+function renderDraft(b){
+  const d=b.draft||{}, rows=d.rows||[];
+  draftRevision=d.revision;
+  $('draft-lbl').textContent=b.headline||'Review your calendar draft';
+  $('draft-note').textContent=b.message||'Nothing has been changed yet.';
+  $('confirm-error').hidden=true;
+
+  const host=$('rows'); host.innerHTML=''; let anyPast=false;
+  rows.forEach(r=>{
+    const f=fmtRow(r); if(f.past)anyPast=true;
+    /* textContent, never innerHTML: parser and (later) model output is untrusted
+       and must never be able to render as markup. */
+    const el=document.createElement('div'); el.className='row';
+    const when=document.createElement('span'); when.className='d'; when.textContent=f.when;
+    const what=document.createElement('span'); what.className='t'; what.textContent=f.title+(f.detail?' · '+f.detail:'');
+    const tag=document.createElement('span'); tag.className='s '+(b.can_confirm?'ok':'q'); tag.textContent=b.can_confirm?'ready':'check';
+    el.appendChild(when); el.appendChild(what); el.appendChild(tag);
+    host.appendChild(el);
+  });
+
+  (d.assumptions||[]).forEach(a=>{
+    const p=document.createElement('p'); p.className='hint'; p.textContent='Assumed: '+a; host.appendChild(p);
+  });
+
+  /* The server has no staleness check yet, so warn client-side rather than let
+     someone confirm an event that has already happened. */
+  if(anyPast){
+    const p=document.createElement('p'); p.className='error';
+    p.textContent='This time has already passed. Start a new request rather than confirming this one.';
+    host.appendChild(p);
+  }
+
+  const btn=$('make');
+  if(b.can_confirm&&rows.length&&!anyPast){
+    btn.hidden=false; btn.disabled=false;
+    btn.textContent='Create '+rows.length+' event'+(rows.length===1?'':'s');
+  }else{
+    btn.hidden=true;
+  }
+  c3.hidden=false;
+}
+
+async function confirmDraft(){
+  const active=storageGet(ACTIVE); if(!active)return;
+  const btn=$('make'), err=$('confirm-error'), label=btn.textContent;
+  err.hidden=true; btn.disabled=true; btn.textContent='Creating…';
+  let r;
+  try{
+    r=await fetch('/api/v2/submissions/'+encodeURIComponent(active.id)+'/confirm',{
+      method:'POST',
+      headers:{Authorization:'Receipt '+active.receipt,'content-type':'application/json'},
+      body:JSON.stringify({draftRevision:draftRevision})
+    });
+  }catch(e){
+    err.textContent='We could not reach the desk. Nothing was changed — try again.';
+    err.hidden=false; btn.disabled=false; btn.textContent=label; return;
+  }
+  const b=await r.json().catch(()=>null);
+
+  if(r.status===409&&b&&b.code==='DRAFT_CHANGED'){
+    err.textContent=b.message||'This draft changed. Showing the newest version.';
+    err.hidden=false; btn.disabled=true; etag=''; poll(400); return;
+  }
+  if(!r.ok||!b||!b.ok){
+    err.textContent=(b&&b.message)||'We could not confirm this. Nothing was changed.';
+    err.hidden=false; btn.disabled=false; btn.textContent=label; return;
+  }
+
+  /* Confirmed is not created. Keep polling until the calendar actually reports back. */
+  c3.hidden=true;
+  showWait('Adding to your calendar…', b.duplicate?'Already confirmed — finishing up.':'Confirmed. Nothing else needed from you.',false);
+  etag=''; poll(800);
+}
+$('make').onclick=confirmDraft;
 
 function storageGet(k){try{return JSON.parse(localStorage.getItem(k)||'null')}catch{return null}}
 function storageSet(k,v){localStorage.setItem(k,JSON.stringify(v))}
@@ -21,7 +121,7 @@ function collapse(el,text){el.classList.add('done');el.innerHTML='<span class="t
 function showWait(head,detail,restart){c2.hidden=false;$('wait-label').textContent=head;$('wait-detail').textContent=detail||'Safe to leave — it is saved under your requests.';$('restart').hidden=!restart}
 
 /* Terminal: this request will never resolve. Stop polling, forget it, tell the truth. */
-function terminal(head,detail){clearActive();collapse(c1,'Request sent');showWait(head,detail,true)}
+function terminal(head,detail){clearActive();c3.hidden=true;collapse(c1,'Request sent');showWait(head,detail,true)}
 
 /* No stored request, or a dead one: return to a clean compose screen with no ghost cards. */
 function resetToCompose(notice){
@@ -123,7 +223,8 @@ async function poll(delay=1200){
     next(delay*1.5,10000);
     return;
   }
-  if(b.state==='needs_attention'){terminal('One detail is needed',b.message);return}
+  if(b.draft&&(b.state==='ready'||b.can_confirm)){collapse(c1,'Request sent');c2.hidden=true;renderDraft(b);return}
+  if(b.state==='needs_attention'){if(b.draft){collapse(c1,'Request sent');c2.hidden=true;renderDraft(b);return}terminal('One detail is needed',b.message);return}
   if(b.state==='completed'){terminal('Calendar updated',b.message||'Your calendar request was completed.');return}
   terminal(b.headline||'Request could not be completed',b.message||'Nothing was changed. Start a new request with clearer details.');
 }
